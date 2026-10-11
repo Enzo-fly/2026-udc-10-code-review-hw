@@ -76,7 +76,7 @@
 `Edit` власного файлу). Тобто 2 з 9 сесій після Task C вийшли за перелік інструментів.
 
 У CI (`pipeline/ai-review.yml`) це закрито жорстко: `--disallowedTools "…,Bash,…"`, запис — лише
-`Edit(./review-runs/pr-ci.md)`, а `--permission-mode dontAsk` відхиляє все, що не дозволено заздалегідь.
+`Edit(./review-runs/pr-ci.md)`, а в неінтерактивному режимі `-p` усе поза `--allowedTools` відхиляється, бо дозвіл нікому дати.
 Локально те саме дало б правило `deny` для `Bash`/`Edit` у `.claude/settings.json`
 (не додано, бо змінило б конфіг рев'юера після вимірювань).
 

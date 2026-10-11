@@ -119,15 +119,16 @@ jobs:
       # never earlier reviews (review-runs/) or process memory (/proc) — no Read(~/**) deny:
       # the runner workspace itself lives under /home/runner;
       # file writes only to the one output file (Edit(path) rules cover Write too — so
-      # Edit must NOT be denied outright); no shell, no network. dontAsk: anything not
-      # pre-approved is refused instead of asking for permission.
+      # Edit must NOT be denied outright); no shell, no network. Mode `default`: in -p
+      # (non-interactive) mode nobody can grant a permission, so anything not in
+      # --allowedTools is refused. (`dontAsk` is not a valid mode in CLI 2.0.0.)
       - name: Run the reviewer (read-only tools, no shell, no network tools)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # only in this step
         run: >-
           claude
           -p "/review-pr pr-ci"
-          --permission-mode dontAsk
+          --permission-mode default
           --allowedTools "Read(./**),Grep,Glob,Edit(./review-runs/pr-ci.md)"
           --disallowedTools "Read(./review-runs/**),Read(//proc/**),Bash,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
           --max-turns 20
