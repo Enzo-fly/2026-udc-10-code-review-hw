@@ -1,6 +1,6 @@
 ---
 description: Рев'ю одного PR з черги (review-queue/pr-N) за стандартом команди docs/review-standard.md
-argument-hint: pr-N [run-M] (наприклад, pr-3 або pr-3 run-2)
+argument-hint: pr-N [run-M] (наприклад, pr-3, pr-3 run-2; у CI — pr-ci)
 model: claude-opus-5-5
 allowed-tools: Read, Grep, Glob, Write
 disable-model-invocation: true
@@ -16,9 +16,11 @@ disable-model-invocation: true
 
 ## 0. Вхід і межі
 
-1. Перше слово аргументу має бути `pr-N` або `N`, де N — ціле від 1 до 6. Друге слово
-   (необов'язкове) — `run-M`, де M — ціле від 2 до 9: номер повторного прогону. Будь-що
-   інше — зупинись і напиши «Невірний аргумент: очікую pr-1 … pr-6 [run-2 … run-9]».
+1. Перше слово аргументу має бути `pr-N` або `N`, де N — ціле від 1 до 6, або `pr-ci` —
+   PR, який CI-пайплайн (`pipeline/ai-review.yml`) поклав у `review-queue/pr-ci/`. Друге
+   слово (необов'язкове) — `run-M`, де M — ціле від 2 до 9: номер повторного прогону.
+   Будь-що інше — зупинись і напиши «Невірний аргумент: очікую pr-1 … pr-6 або pr-ci
+   [run-2 … run-9]».
    Далі `pr-N` — нормалізований номер PR, а **файл виходу** — `review-runs/pr-N.md`
    без `run-M` або `review-runs/run-M/pr-N.md` з ним. Номер прогону впливає лише на шлях
    файлу виходу, а не на саме рев'ю.

@@ -1,0 +1,161 @@
+# AI review pipeline for pull requests to app/ (UDC Workshop 10, Task D).
+#
+# Lives in pipeline/, NOT in .github/workflows/, so it never runs in the course repo.
+# To run it for real, copy it to .github/workflows/ in your own fork (Task E, path 1).
+#
+# Order:   tests ──┐
+#                  ├─► ai-review (advisory, read-only) ──► comment (posts the text, no AI)
+#          rules ──┘
+#
+# - `tests` and `rules` are deterministic. Mark BOTH as required status checks in branch
+#   protection; the AI jobs are never required.
+# - The AI review is advisory: it only posts a comment. It cannot approve, request
+#   changes, push or merge. A human approves every merge.
+# - Fork PRs: no secrets and no AI review — only the deterministic checks run.
+# - Third-party actions are referenced by version tag for readability; pin them to a
+#   full commit SHA before using this in production.
+
+name: AI review
+
+on:
+  pull_request: # NOT pull_request_target: fork PRs get a read-only token and no secrets
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Nothing by default; every job asks for the minimum it needs.
+permissions: {}
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (В2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm test
+        working-directory: app
+        run: npm test
+
+  rules:
+    name: Team rules (К4 К6 К9 К11 В3 · В4 secrets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the checks diff the PR against its base commit
+          persist-credentials: false
+      - name: Deterministic rule checks (docs/review-standard.md, items marked [CI])
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash pipeline/checks.sh "$BASE_SHA" HEAD
+      - name: Secret scan (В4)
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          ghcr.io/gitleaks/gitleaks:v8.18.4
+          detect --no-git --source /repo --redact --exit-code 1
+
+  ai-review:
+    name: AI review (advisory)
+    needs: [tests, rules]
+    # Runs after the deterministic checks: only if tests pass (a broken PR is not worth
+    # tokens), even if rule checks fail (their findings are already annotated). Skipped for
+    # fork PRs (no secret available, and none should be) and for drafts.
+    if: >-
+      always()
+      && needs.tests.result == 'success'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read       # check out the BASE commit
+      pull-requests: read  # read the PR diff
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      CLAUDE_CODE_VERSION: "2.0.0" # pin to the version you tested the command with
+    steps:
+      # The reviewer's configuration (.claude/commands/review-pr.md, docs/review-standard.md)
+      # and the base code in app/ come from the BASE commit, so a PR cannot rewrite the
+      # rules it is reviewed by. PR code is never checked out and never executed here.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Put the PR into review-queue/pr-ci as data
+        env:
+          # Untrusted text goes through env vars, never through ${{ }} inside `run`.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p review-queue/pr-ci review-runs
+          printf '# %s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > review-queue/pr-ci/PR.md
+          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > review-queue/pr-ci/change.diff
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run the reviewer (read-only tools, no shell, no network tools)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # only in this step
+        run: >-
+          npx --yes "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          -p "/review-pr pr-ci"
+          --allowedTools "Read,Grep,Glob,Write"
+          --disallowedTools "Bash,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
+          --max-turns 20
+
+      - name: Check the review was written
+        run: test -s review-runs/pr-ci.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-review
+          path: review-runs/pr-ci.md
+          retention-days: 7
+
+  comment:
+    name: Post AI review as a comment
+    needs: ai-review
+    if: needs.ai-review.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # The only job that can write — and it has no API key, no checkout and runs no model.
+    permissions:
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-review
+
+      - name: Build the comment (advisory header, no @-mentions, size limit)
+        run: |
+          {
+            echo "> 🤖 **Дорадче AI-рев'ю** за docs/review-standard.md. Це не схвалення і не"
+            echo "> блокування: злиття затверджує людина. Обов'язкові перевірки — тести й правила."
+            echo
+            # Break @-mentions so the model's text cannot ping people or bots.
+            sed 's/@/@\xE2\x80\x8B/g' pr-ci.md | head -c 60000
+          } > comment.md
+
+      - name: Post the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
