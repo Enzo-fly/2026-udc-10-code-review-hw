@@ -110,14 +110,26 @@ jobs:
         with:
           node-version: 22
 
+      # Installed in its own step WITHOUT the API key: npm install scripts of the CLI and
+      # its dependencies never see the secret.
+      - name: Install Claude Code CLI (no secrets in this step)
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      # Tool limits are enforced here, not left to the prompt: Read only inside the repo,
+      # never earlier reviews (review-runs/) or process memory (/proc) — no Read(~/**) deny:
+      # the runner workspace itself lives under /home/runner;
+      # file writes only to the one output file (Edit(path) rules cover Write too — so
+      # Edit must NOT be denied outright); no shell, no network. dontAsk: anything not
+      # pre-approved is refused instead of asking for permission.
       - name: Run the reviewer (read-only tools, no shell, no network tools)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # only in this step
         run: >-
-          npx --yes "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          claude
           -p "/review-pr pr-ci"
-          --allowedTools "Read,Grep,Glob,Write"
-          --disallowedTools "Bash,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
+          --permission-mode dontAsk
+          --allowedTools "Read(./**),Grep,Glob,Edit(./review-runs/pr-ci.md)"
+          --disallowedTools "Read(./review-runs/**),Read(//proc/**),Bash,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
           --max-turns 20
 
       - name: Check the review was written
@@ -154,6 +166,16 @@ jobs:
             # Break @-mentions so the model's text cannot ping people or bots.
             sed 's/@/@\xE2\x80\x8B/g' pr-ci.md | head -c 60000
           } > comment.md
+
+      # Last line of defence against a leaked key: if the model's text contains something
+      # shaped like an Anthropic API key, fail and post nothing. `grep -q` so the match
+      # itself never reaches the job log.
+      - name: Refuse to post if the comment contains an API key
+        run: |
+          if grep -qE 'sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,}' comment.md; then
+            echo "::error title=Secret in AI review::comment.md contains an Anthropic API key pattern; not posting."
+            exit 1
+          fi
 
       - name: Post the comment
         env:

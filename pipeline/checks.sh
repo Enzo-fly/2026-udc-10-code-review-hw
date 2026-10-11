@@ -18,11 +18,20 @@ FAILED=0
 fail() { echo "::error title=$1::$2"; FAILED=1; }
 warn() { echo "::warning title=$1::$2"; }
 
-# Added lines (without the leading "+") in the given paths.
-added()   { git diff -U0 "$BASE" "$HEAD" -- "$@" | grep -E '^\+[^+]' | cut -c2-; }
-# Removed lines (without the leading "-") in the given paths.
-removed() { git diff -U0 "$BASE" "$HEAD" -- "$@" | grep -E '^-[^-]' | cut -c2-; }
+# Lines with the given sign ("+" or "-"), sign stripped, from inside hunks only. File
+# headers ("--- a/…", "+++ b/…") come before the first "@@" of each file and are skipped;
+# inside a hunk every line counts, even if its content itself starts with "+" or "-".
+diff_lines() {
+  local sign="$1"; shift
+  git diff -U0 "$BASE" "$HEAD" -- "$@" |
+    awk -v s="$sign" '/^diff --git /{h=0; next} /^@@/{h=1; next} h && substr($0,1,1)==s {print substr($0,2)}'
+}
+added()   { diff_lines + "$@"; }
+removed() { diff_lines - "$@"; }
 changed_files() { git diff --name-only "$BASE" "$HEAD" -- "$@"; }
+# NUL-separated, unquoted paths — for loops over files whose names may contain spaces,
+# quotes or non-ASCII characters (read them with `read -r -d ''`).
+changed_files_z() { git diff --name-only -z "$BASE" "$HEAD" -- "$@"; }
 
 # --- К6: public API change without a CHANGELOG entry (fail) -------------------
 api_change=$( { git diff -U0 "$BASE" "$HEAD" -- 'app/src/*.js' | grep -E '^[+-]([[:space:]]*|[^+-].*\b)export\b'; \
@@ -65,21 +74,21 @@ if [ -n "$bare" ]; then
 fi
 
 # --- К2: email/phone returned from a module that never logs access (warn) ----
-for f in $(changed_files 'app/src/*.js'); do
+while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
-  if added "$f" | grep -qE '\b(email|phone)\b' && ! grep -q 'logAccess' "$f"; then
+  if added ":(literal)$f" | grep -qE '\b(email|phone)\b' && ! grep -q 'logAccess' -- "$f"; then
     warn "К2 access log" "$f adds email/phone but never calls logAccess"
   fi
-done
+done < <(changed_files_z 'app/src/*.js')
 
 # --- К3: file system access without a stay-inside-the-folder check (warn) ----
-for f in $(changed_files 'app/src/*.js'); do
+while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
-  if added "$f" | grep -qE 'readFile|writeFile|createReadStream|createWriteStream|\bfs\.|path\.join' \
-     && ! grep -qE 'startsWith\(|path\.relative\(' "$f"; then
+  if added ":(literal)$f" | grep -qE 'readFile|writeFile|createReadStream|createWriteStream|\bfs\.|path\.join' \
+     && ! grep -qE 'startsWith\(|path\.relative\(' -- "$f"; then
     warn "К3 path" "$f touches the file system without checking the resolved path stays inside the allowed folder"
   fi
-done
+done < <(changed_files_z 'app/src/*.js')
 
 # --- К5: local-time date arithmetic (warn) -----------------------------------
 dates=$(added 'app/src/*.js' | grep -nE '\.(getDate|getMonth|getFullYear|getHours|setDate|setMonth|setFullYear)\(|new Date\(\s*["'\''`]')
